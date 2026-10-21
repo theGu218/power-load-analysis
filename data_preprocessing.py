@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-df = pd.read_csv('data/raw/AEP_hourly.csv')
+df = pd.read_csv('AEP_hourly.csv')
 print('shape的值为:',df.shape)
 print(df.dtypes)
 print(df.head())
