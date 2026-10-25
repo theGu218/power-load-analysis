@@ -3,7 +3,8 @@
 > 用 PJM 互联电网 AEP 区域的真实小时级负荷数据，走完一条完整的链路：
 > **清洗 → SQL 数据底座 → 预测建模 → API 服务**。
 >
-> 当前进度：**A1 数据获取与清洗已完成**。
+> 当前进度：**A1 数据清洗已完成**；**SQL 数据底座进行中** —— 建库、基础查询、
+> 日级指标、7 天移动平均、环比/同比已跑通。
 
 ---
 
@@ -26,14 +27,19 @@
 
 ```
 .
-├── data_preprocessing.py    数据清洗脚本
+├── data_preprocessing.py    数据清洗：CSV → 两张 parquet
 ├── AEP_hourly.csv           原始数据（不入库，自行下载）
-├── processed/               清洗后的 parquet（不入库，可由脚本重建）
+├── processed/               清洗产物 + SQLite 库（不入库，可由脚本重建）
+├── sql/
+│   ├── db_build.py          建库：三张表、导入数据、建索引
+│   ├── query.py             命令行查询工具（执行 SQL 并打印结果）
+│   ├── 练习.sql              基础查询：筛选、聚合、JOIN、子查询、CASE
+│   └── 练习2.sql             窗口函数指标：日级指标、移动平均、环比/同比
 ├── 数据处理记录.md           清洗过程、判断依据、最终结果
 └── .gitignore
 ```
 
-清空 `processed/` 后重跑 `python data_preprocessing.py` 即可完全重建。
+清空 `processed/` 后，依次跑 `python data_preprocessing.py` 和 `python sql/db_build.py` 即可完全重建。
 
 ---
 
@@ -55,44 +61,86 @@
 
 ## 4. 产出
 
-| 文件 | 形状 | 列 | 用途 |
-|---|---|---|---|
-| `processed/fact_load.parquet` | 121,269 × 2 | `dt`, `aep_mw` | 事实表：每小时一条负荷记录 |
-| `processed/dim_date.parquet` | 121,269 × 9 | `dt`, `date`, `year`, `month`, `hour`, `weekday`, `is_weekend`, `n_hours`, `had_duplicate` | 时间维度，为后续 SQL 星型模型准备 |
+### 4.1 parquet
 
-两个关键口径列：
+| 文件 | 形状 | 列 |
+|---|---|---|
+| `processed/fact_load.parquet` | 121,269 × 2 | `dt`, `aep_mw` |
+| `processed/dim_date.parquet` | 121,269 × 9 | `dt`, `date`, `year`, `month`, `hour`, `weekday`, `is_weekend`, `n_hours`, `had_duplicate` |
 
-- **`n_hours`**：当天实际行数（普通日 24，夏令时春季日 23，首日 23，末日 1）
-- **`had_duplicate`**：当天源数据有重复时间戳、去重时丢了 1 个真实小时（2014–2017 年 4 天）
+### 4.2 SQLite 星型模型（`processed/power_load.db`）
 
-做日级聚合时，**日电量（`SUM`）只在 `n_hours = 24 AND had_duplicate = 0` 的日子上直接比较**；
-`AVG` / `MAX` 不受小时数影响。
+| 表 | 行数 | 说明 |
+|---|---|---|
+| `dim_date` | 5,055 | 一天一行：年/季/月/日/星期/季节/`n_hours`/`had_duplicate` |
+| `dim_hour` | 24 | 一小时一行：`period`（谷/平/峰）与 `period_rank`，按各小时平均负荷三分位划分 |
+| `fact_load` | 121,269 | 一小时一行：`dt`、`date`、`hour`、`aep_mw`（MW） |
+
+- `fact_load.date` 与 `fact_load.hour` 分别有外键指向两张维度表；
+- 日级比较的口径：**`n_hours = 24 AND had_duplicate = 0`**；
+- 索引：`fact_load(date)`、`fact_load(hour)`、`fact_load(date, hour)`。
+
+> `processed/power_load.db` 不入库，由 `sql/db_build.py` 从 parquet 重建。
 
 ---
 
-## 5. 运行
+## 5. SQL 查询
+
+```bash
+# 建库（可重复跑，先删表再重建）
+python sql/db_build.py
+
+# 查一条
+python sql/query.py "SELECT COUNT(*) FROM fact_load"
+
+# 跑文件里保存的单条语句（多语句请一次拆一条，或用 VS Code 插件执行）
+python sql/query.py -f sql/练习.sql
+```
+
+也可以在 VS Code 里用 SQLite 扩展打开 `processed/power_load.db`，选中 SQL 直接执行。
+
+已覆盖的查询：
+
+| 文件 | 内容 |
+|---|---|
+| `sql/练习.sql` | `SELECT/WHERE/ORDER BY/LIMIT`、`GROUP BY/HAVING`、`JOIN`（INNER/LEFT/CROSS/自连接）、子查询、`CASE WHEN` |
+| `sql/练习2.sql` | 日级指标（电量/日均/峰谷差/负荷率）、7 天移动平均（`ROWS BETWEEN`）、月度环比与同比（`LAG`） |
+
+---
+
+## 6. 运行
 
 ```bash
 pip install pandas numpy pyarrow
+
+# 1) 清洗：CSV → parquet
 python data_preprocessing.py
+
+# 2) 建库：parquet → SQLite
+python sql/db_build.py
+
+# 3) 查询
+python sql/query.py "SELECT * FROM dim_hour LIMIT 5"
 ```
 
-输出：`processed/` 下两张 parquet + 控制台自查信息（行数、每天行数分布、空值检查）。
+`data_preprocessing.py` 会打印行数、每天行数分布和空值检查；
+`db_build.py` 会打印三张表行数与外键检查结果。
 
 ---
 
-## 6. 已知局限
+## 7. 已知局限
 
 1. 2014–2017 年 4 个夏令时秋季日：源数据有两个 02:00 时间戳，去重保留了第一条，丢了 1 个真实小时；要严格保留需要带时区转 UTC。
 2. 3 个普通缺失（2010-12-10 00:00、2012-12-06 04:00、2014-03-11 14:00）未补，占比 0.02%。
 3. 极值只做了人工判断，还没有写成可复用的异常标记规则。
-4. 尚无 SQL 库、模型与 API（下一阶段）。
+4. SQL 指标尚未覆盖：排名、占比、CTE 链、连续多日高负荷、2018-07 日指标综合表。
+5. 尚无模型（预测）与 API。
 
 ---
 
-## 7. 下一步
+## 8. 下一步
 
-1. **SQL 数据底座**：SQLite + 星型模型（`fact_load` + `dim_date` + `dim_hour`），练 JOIN / 窗口函数
+1. **补齐 SQL 指标**：排名、占比、CTE 链、滑动窗口、日指标综合表
 2. **建模**：按 `TimeSeriesSplit` 做逐小时负荷预测
 3. **服务化**：FastAPI 暴露预测与日指标接口，Docker 打包
 
