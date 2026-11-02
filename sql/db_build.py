@@ -2,6 +2,10 @@ import pandas as pd
 import sqlite3
 cx = sqlite3.connect('processed/power_load.db')
 cx.execute("PRAGMA foreign_keys = ON")
+# 脚本要能重复跑：先删旧表和旧视图（先事实表，再维度表）
+cx.execute("DROP TABLE IF EXISTS fact_load")
+cx.execute("DROP TABLE IF EXISTS dim_date")
+cx.execute("DROP TABLE IF EXISTS dim_hour")
 """
 SQLite 为什么默认不强制外键？
 SQLite 是先有表、后加的外键功能。
@@ -42,6 +46,16 @@ cx.execute("""
 
 df_dim = pd.read_parquet('processed/dim_date.parquet')
 df_fact = pd.read_parquet('processed/fact_load.parquet')
+# dim_date.parquet 是"每小时一行"，维度表要"一天一行"，先按 date 去重
+df_dim = df_dim.drop_duplicates(subset='date').reset_index(drop=True)
+# parquet 里没有 quarter / season / day，从 date 派生
+df_dim['day'] = pd.to_datetime(df_dim['date']).dt.day
+df_dim['quarter'] = pd.to_datetime(df_dim['date']).dt.quarter
+season_map = {12: '冬', 1: '冬', 2: '冬',
+              3: '春', 4: '春', 5: '春',
+              6: '夏', 7: '夏', 8: '夏',
+              9: '秋', 10: '秋', 11: '秋'}
+df_dim['season'] = df_dim['month'].map(season_map)
 # 确保 dt 列是 datetime 格式，然后提取出 hour
 df_fact['dt'] = pd.to_datetime(df_fact['dt'])
 df_fact['hour'] = df_fact['dt'].dt.hour
@@ -95,6 +109,10 @@ print("fact_load 总行数:", cursor.fetchone()[0])
 # 验收：查外键有没有挂掉
 cursor.execute("PRAGMA foreign_key_check")
 print("外键检查结果(应为空[]):", cursor.fetchall())
+
+from pathlib import Path
+cx.executescript(Path('sql/views.sql').read_text(encoding='utf-8'))
+
 
 cx.close()
 
