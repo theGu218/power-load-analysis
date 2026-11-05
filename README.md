@@ -1,10 +1,11 @@
 # 区域电力负荷分析（PJM / AEP）
 
 > 用 PJM 互联电网 AEP 区域的真实小时级负荷数据，走完一条完整的链路：
-> **清洗 → SQL 数据底座 → 预测建模 → API 服务**。
+> **清洗 → SQL 数据底座 → API 服务 → 预测建模**。
 >
-> 当前进度：**数据清洗与 SQL 数据底座已完成** —— 建库（三表星型模型）、基础查询、
-> 窗口函数指标（日级指标 / 移动平均 / 环比同比 / 排名 / 占比 / CTE 链 / 日指标表）。
+> 当前进度：**数据清洗、SQL 数据底座、指标视图与 API 服务已完成** —— 三表星型模型、
+> 基础查询、窗口函数指标、4 个指标视图，以及 FastAPI 的 4 个接口（`/docs` 可调）。
+> 建模（S5）还没开始。
 
 ---
 
@@ -28,11 +29,13 @@
 ```
 .
 ├── data_preprocessing.py    数据清洗：CSV → 两张 parquet
+├── main.py                  FastAPI 应用：/health /summary /daily /anomalies
 ├── AEP_hourly.csv           原始数据（不入库，自行下载）
 ├── processed/               清洗产物 + SQLite 库（不入库，可由脚本重建）
 ├── sql/
-│   ├── db_build.py          建库：三张表、导入数据、建索引
+│   ├── db_build.py          建库：三张表、导入数据、建索引、执行视图
 │   ├── query.py             命令行查询工具（执行 SQL 并打印结果）
+│   ├── views.sql            指标视图：daily_metrics / monthly_metrics / hourly_profile / season_profile
 │   ├── 练习.sql              基础查询：筛选、聚合、JOIN、子查询、CASE
 │   └── 练习2.sql             窗口函数指标：日级指标、移动平均、环比/同比
 ├── 数据处理记录.md           清洗过程、判断依据、最终结果
@@ -105,43 +108,68 @@ python sql/query.py -f sql/练习.sql
 |---|---|
 | `sql/练习.sql` | `SELECT/WHERE/ORDER BY/LIMIT`、`GROUP BY/HAVING`、`JOIN`（INNER/LEFT/CROSS/自连接）、子查询、`CASE WHEN` |
 | `sql/练习2.sql` | 日级指标（电量/日均/峰谷差/负荷率）、7 天移动平均（`ROWS BETWEEN`）、月度环比与同比（`LAG`）、每年最高月份（`RANK`）、每月占全年比例（`SUM() OVER`）、CTE 链、连续 3 天高负荷、2018-07 日指标表 |
+| `sql/views.sql` | 4 个视图：`daily_metrics`（日级指标 + `is_complete`）、`monthly_metrics`（月均 + 环比/同比）、`hourly_profile`（24 点曲线）、`season_profile`（季节性） |
 
 ---
 
-## 6. 运行
+## 6. API 服务
 
 ```bash
-pip install pandas numpy pyarrow
+# 在项目根目录启动（main.py 在根目录）
+uvicorn main:app --reload
+```
+
+打开 `http://127.0.0.1:8000/docs` 可以直接调接口。
+
+| 接口 | 说明 |
+|---|---|
+| `GET /health` | 服务状态 + 事实表行数 |
+| `GET /summary` | 全库概览：行数、日期范围、均值、峰值/谷值及时间（启动时算一次，缓存） |
+| `GET /daily?start=&end=` | 按日期区间返回日指标（来自 `daily_metrics` 视图） |
+| `GET /anomalies?start=&end=&threshold=` | 区间内负荷超过阈值的小时，默认阈值 20000，必须 > 0 |
+
+错误处理：日期格式错 → **422**（Pydantic 自动）；`start > end` → **400**；区间无数据 → **404**。
+
+---
+
+## 7. 运行
+
+```bash
+pip install pandas numpy pyarrow fastapi uvicorn
 
 # 1) 清洗：CSV → parquet
 python data_preprocessing.py
 
-# 2) 建库：parquet → SQLite
+# 2) 建库：parquet → SQLite（同时建视图）
 python sql/db_build.py
 
-# 3) 查询
+# 3) 查一条
 python sql/query.py "SELECT * FROM dim_hour LIMIT 5"
+
+# 4) 起 API
+uvicorn main:app --reload
 ```
 
 `data_preprocessing.py` 会打印行数、每天行数分布和空值检查；
-`db_build.py` 会打印三张表行数与外键检查结果。
+`db_build.py` 会打印三张表行数、外键检查结果。
 
 ---
 
-## 7. 已知局限
+## 8. 已知局限
 
 1. 2014–2017 年 4 个夏令时秋季日：源数据有两个 02:00 时间戳，去重保留了第一条，丢了 1 个真实小时；要严格保留需要带时区转 UTC。
 2. 3 个普通缺失（2010-12-10 00:00、2012-12-06 04:00、2014-03-11 14:00）未补，占比 0.02%。
 3. 极值只做了人工判断，还没有写成可复用的异常标记规则。
-4. SQL 指标目前是手写查询，还没有接成自动化报表/视图。
-5. 尚无模型（预测）与 API。
+4. API 目前只有只读查询，还没有预测接口（建模之后再加）。
+5. 尚无模型（预测）。
 
 ---
 
-## 8. 下一步
+## 9. 下一步
 
-1. **建模**：按 `TimeSeriesSplit` 做逐小时负荷预测
-2. **服务化**：FastAPI 暴露预测与日指标接口，Docker 打包
+1. **建模**：`TimeSeriesSplit(5)` + 滞后特征，基线 / Ridge / 树模型，保存模型与指标
+2. **`/predict` 接口**：加载模型，接收日历 + 历史负荷特征，返回预测值
+3. **Docker**：把 API 打包成镜像
 
 ---
 
