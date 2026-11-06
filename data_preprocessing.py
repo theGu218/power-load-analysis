@@ -164,8 +164,8 @@ n_hours = 当天实际行数（DST 日 23/25）；had_duplicate = 那天源数�
 
 df_fact_load = d[['dt', 'AEP_MW']].rename(columns={'AEP_MW': 'aep_mw'})
 df_dim_date = d[['dt', 'date', 'year', 'month', 'hour', 'weekday', 'is_weekend', 'n_hours', 'had_duplicate']]
-df_fact_load.to_parquet('data/processed/fact_load.parquet', index=False)
-df_dim_date.to_parquet('data/processed/dim_date.parquet', index=False)
+df_fact_load.to_parquet('processed/fact_load.parquet', index=False)
+df_dim_date.to_parquet('processed/dim_date.parquet', index=False)
 
 # ---------- 落盘后自查 ----------
 print('\n=== 落盘自查 ===')
@@ -174,8 +174,8 @@ print('每天行数分布:', d.groupby('date').size().value_counts().sort_index(
 print('非 24 小时的日子:')
 print(d[d['n_hours'] != 24].groupby('date').size().to_string())
 print('去重丢过小时的日期:', d.loc[d['had_duplicate'] == 1, 'date'].nunique(), '天')
-fact_check = pd.read_parquet('data/processed/fact_load.parquet')
-dim_check = pd.read_parquet('data/processed/dim_date.parquet')
+fact_check = pd.read_parquet('processed/fact_load.parquet')
+dim_check = pd.read_parquet('processed/dim_date.parquet')
 print('读回:', fact_check.shape, dim_check.shape,
       '| 空值:', int(fact_check.isna().sum().sum()), int(dim_check.isna().sum().sum()))
 
