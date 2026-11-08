@@ -3,9 +3,9 @@
 > 用 PJM 互联电网 AEP 区域的真实小时级负荷数据，走完一条完整的链路：
 > **清洗 → SQL 数据底座 → API 服务 → 预测建模**。
 >
-> 当前进度：**数据清洗、SQL 数据底座、指标视图与 API 服务已完成** —— 三表星型模型、
-> 基础查询、窗口函数指标、4 个指标视图，以及 FastAPI 的 4 个接口（`/docs` 可调）。
-> 建模（S5）还没开始。
+> 当前进度：**数据清洗、SQL 数据底座、指标视图、FastAPI 接口与建模已完成** ——
+> 三表星型模型、4 个指标视图、4 个只读接口，以及一个 5 折 RMSE **312.8 MW** 的梯度提升模型。
+> 下一步：`/predict` 接口与 Docker。
 
 ---
 
@@ -30,6 +30,8 @@
 .
 ├── data_preprocessing.py    数据清洗：CSV → 两张 parquet
 ├── main.py                  FastAPI 应用：/health /summary /daily /anomalies
+├── src/train.py             建模：特征、基线、Ridge、GBR、保存模型
+├── models/                  模型与指标（power_gb_model.pkl / metrics.json）
 ├── AEP_hourly.csv           原始数据（不入库，自行下载）
 ├── processed/               清洗产物 + SQLite 库（不入库，可由脚本重建）
 ├── sql/
@@ -95,9 +97,6 @@ python sql/db_build.py
 
 # 查一条
 python sql/query.py "SELECT COUNT(*) FROM fact_load"
-
-# 跑文件里保存的单条语句（多语句请一次拆一条，或用 VS Code 插件执行）
-python sql/query.py -f sql/练习.sql
 ```
 
 也可以在 VS Code 里用 SQLite 扩展打开 `processed/power_load.db`，选中 SQL 直接执行。
@@ -107,8 +106,8 @@ python sql/query.py -f sql/练习.sql
 | 文件 | 内容 |
 |---|---|
 | `sql/练习.sql` | `SELECT/WHERE/ORDER BY/LIMIT`、`GROUP BY/HAVING`、`JOIN`（INNER/LEFT/CROSS/自连接）、子查询、`CASE WHEN` |
-| `sql/练习2.sql` | 日级指标（电量/日均/峰谷差/负荷率）、7 天移动平均（`ROWS BETWEEN`）、月度环比与同比（`LAG`）、每年最高月份（`RANK`）、每月占全年比例（`SUM() OVER`）、CTE 链、连续 3 天高负荷、2018-07 日指标表 |
-| `sql/views.sql` | 4 个视图：`daily_metrics`（日级指标 + `is_complete`）、`monthly_metrics`（月均 + 环比/同比）、`hourly_profile`（24 点曲线）、`season_profile`（季节性） |
+| `sql/练习2.sql` | 日级指标、7 天移动平均（`ROWS BETWEEN`）、月度环比与同比（`LAG`）、每年最高月份（`RANK`）、占比（`SUM() OVER`）、CTE 链、连续 3 天高负荷 |
+| `sql/views.sql` | 4 个视图：`daily_metrics`、`monthly_metrics`、`hourly_profile`、`season_profile` |
 
 ---
 
@@ -128,14 +127,51 @@ uvicorn main:app --reload
 | `GET /daily?start=&end=` | 按日期区间返回日指标（来自 `daily_metrics` 视图） |
 | `GET /anomalies?start=&end=&threshold=` | 区间内负荷超过阈值的小时，默认阈值 20000，必须 > 0 |
 
-错误处理：日期格式错 → **422**（Pydantic 自动）；`start > end` → **400**；区间无数据 → **404**。
+错误处理：日期格式错 → **422**；`start > end` → **400**；区间无数据 → **404**。
 
 ---
 
-## 7. 运行
+## 7. 建模
+
+**任务**：用过去的信息预测下一小时的 `aep_mw`。
+
+**特征**（9 个）
+
+- 日历：`hour`、`weekday`、`month`、`is_weekend`、`season_code`
+- 滞后：`lag1`（上一小时）、`lag24`（昨天同时刻）、`lag168`（上周同时刻）、`roll24`（过去 24 小时均值，先 `shift(1)` 再滚动，避免泄漏）
+
+**评估**：`TimeSeriesSplit(5)`，指标 RMSE（MW）。
+
+| 模型 | RMSE 均值 | std |
+|---|---|---|
+| 常数基线 | 2,644.6 | 93.9 |
+| `lag24` 直接预测 | 1,299.7 | 76.3 |
+| Ridge（只用日历） | 2,156.3 | 74.1 |
+| Ridge（日历 + 滞后） | 508.5 | 21.2 |
+| **GBR（100 树，depth=3，subsample=0.7）** | **312.8** | 9.3 |
+
+结论：
+
+1. **滞后特征比日历特征重要得多**：加滞后后误差从 2,156 降到 508（约 4 倍）；
+2. 树模型比线性再降约 38%（508 → 313），说明负荷与特征之间有明显非线性；
+3. 最终模型比 `lag24` 基线好 76%，比常数基线好 88%。
+
+**产出**
+
+| 文件 | 内容 |
+|---|---|
+| `src/train.py` | 完整训练流程（可重复跑） |
+| `models/power_gb_model.pkl` | 最终模型 + 特征列名（joblib） |
+| `models/metrics.json` | 每折 RMSE、均值、标准差、模型参数 |
+
+> 训练完会覆盖 `models/`；仓库里已提供一份训练好的模型。
+
+---
+
+## 8. 运行
 
 ```bash
-pip install pandas numpy pyarrow fastapi uvicorn
+pip install pandas numpy pyarrow fastapi uvicorn scikit-learn joblib
 
 # 1) 清洗：CSV → parquet
 python data_preprocessing.py
@@ -143,33 +179,31 @@ python data_preprocessing.py
 # 2) 建库：parquet → SQLite（同时建视图）
 python sql/db_build.py
 
-# 3) 查一条
-python sql/query.py "SELECT * FROM dim_hour LIMIT 5"
+# 3) 训练模型（从项目根目录运行）
+python src/train.py
 
 # 4) 起 API
 uvicorn main:app --reload
 ```
 
-`data_preprocessing.py` 会打印行数、每天行数分布和空值检查；
-`db_build.py` 会打印三张表行数、外键检查结果。
-
 ---
 
-## 8. 已知局限
+## 9. 已知局限
 
-1. 2014–2017 年 4 个夏令时秋季日：源数据有两个 02:00 时间戳，去重保留了第一条，丢了 1 个真实小时；要严格保留需要带时区转 UTC。
-2. 3 个普通缺失（2010-12-10 00:00、2012-12-06 04:00、2014-03-11 14:00）未补，占比 0.02%。
+1. 2014–2017 年 4 个夏令时秋季日：源数据有两个 02:00 时间戳，去重保留了第一条，丢了 1 个真实小时。
+2. 3 个普通缺失未补，占比 0.02%。
 3. 极值只做了人工判断，还没有写成可复用的异常标记规则。
-4. API 目前只有只读查询，还没有预测接口（建模之后再加）。
-5. 尚无模型（预测）。
+4. API 目前只有只读查询，预测接口（`/predict`）还没做。
+5. 模型只做了**单步预测**（用 `lag1` 等特征）；如果改成预测未来 24 小时，特征要重新设计。
+6. 模型文件依赖训练时的 sklearn 版本，换环境可能加载失败。
 
 ---
 
-## 9. 下一步
+## 10. 下一步
 
-1. **建模**：`TimeSeriesSplit(5)` + 滞后特征，基线 / Ridge / 树模型，保存模型与指标
-2. **`/predict` 接口**：加载模型，接收日历 + 历史负荷特征，返回预测值
-3. **Docker**：把 API 打包成镜像
+1. **`/predict` 接口**：加载模型，接收日历 + 历史负荷特征，返回预测值（S6）
+2. **Docker**：把 API 打包成镜像（S7）
+3. **模型继续优化**：LightGBM、更多滚动特征、多步预测
 
 ---
 

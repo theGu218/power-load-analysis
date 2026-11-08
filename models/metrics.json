@@ -1,0 +1,19 @@
+{
+    "model_type": "GradientBoostingRegressor",
+    "rmse_folds": [
+        330.7,
+        311.0,
+        306.4,
+        311.3,
+        304.8
+    ],
+    "rmse_mean": 312.8,
+    "rmse_std": 9.3,
+    "parameters": {
+        "n_estimators": 100,
+        "learning_rate": 0.1,
+        "max_depth": 3,
+        "subsample": 0.7,
+        "random_state": 42
+    }
+}
