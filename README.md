@@ -126,6 +126,8 @@ uvicorn main:app --reload
 | `GET /summary` | 全库概览：行数、日期范围、均值、峰值/谷值及时间（启动时算一次，缓存） |
 | `GET /daily?start=&end=` | 按日期区间返回日指标（来自 `daily_metrics` 视图） |
 | `GET /anomalies?start=&end=&threshold=` | 区间内负荷超过阈值的小时，默认阈值 20000，必须 > 0 |
+| `POST /predict` | 传入 9 个特征（日历 + 滞后），返回预测负荷；模型在启动时加载 |
+| `GET /model_info` | 模型类型、5 折 RMSE、特征列表（来自 `models/metrics.json`） |
 
 错误处理：日期格式错 → **422**；`start > end` → **400**；区间无数据 → **404**。
 
@@ -193,7 +195,7 @@ uvicorn main:app --reload
 1. 2014–2017 年 4 个夏令时秋季日：源数据有两个 02:00 时间戳，去重保留了第一条，丢了 1 个真实小时。
 2. 3 个普通缺失未补，占比 0.02%。
 3. 极值只做了人工判断，还没有写成可复用的异常标记规则。
-4. API 目前只有只读查询，预测接口（`/predict`）还没做。
+4. API 已包含 `/predict`，但没有限流、缓存和鉴权；生产环境还需要补这些。
 5. 模型只做了**单步预测**（用 `lag1` 等特征）；如果改成预测未来 24 小时，特征要重新设计。
 6. 模型文件依赖训练时的 sklearn 版本，换环境可能加载失败。
 
@@ -201,8 +203,8 @@ uvicorn main:app --reload
 
 ## 10. 下一步
 
-1. **`/predict` 接口**：加载模型，接收日历 + 历史负荷特征，返回预测值（S6）
-2. **Docker**：把 API 打包成镜像（S7）
+1. **Docker**：把 API 打包成镜像（S7）
+2. **测试与 CI**：pytest 覆盖 `/health`、`/predict`，GitHub Actions 跑测试
 3. **模型继续优化**：LightGBM、更多滚动特征、多步预测
 
 ---
