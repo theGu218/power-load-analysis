@@ -3,9 +3,9 @@
 > 用 PJM 互联电网 AEP 区域的真实小时级负荷数据，走完一条完整的链路：
 > **清洗 → SQL 数据底座 → API 服务 → 预测建模**。
 >
-> 当前进度：**数据清洗、SQL 数据底座、指标视图、FastAPI 接口与建模已完成** ——
-> 三表星型模型、4 个指标视图、4 个只读接口，以及一个 5 折 RMSE **312.8 MW** 的梯度提升模型。
-> 下一步：`/predict` 接口与 Docker。
+> 当前进度：**清洗、SQL、API、建模、容器化全链路已完成** —— 三表星型模型、4 个指标视图、
+> 6 个 HTTP 接口（含 `/predict`），5 折 RMSE **312.8 MW** 的梯度提升模型，以及可运行的 Docker 镜像。
+> 下一步：测试与 CI 收口。
 
 ---
 
@@ -29,9 +29,13 @@
 ```
 .
 ├── data_preprocessing.py    数据清洗：CSV → 两张 parquet
-├── main.py                  FastAPI 应用：/health /summary /daily /anomalies
+├── main.py                  FastAPI 应用：6 个接口（含 /predict）
 ├── src/train.py             建模：特征、基线、Ridge、GBR、保存模型
 ├── models/                  模型与指标（power_gb_model.pkl / metrics.json）
+├── tests/test_api.py        接口测试（pytest）
+├── Dockerfile               容器化：python:3.12-slim + 依赖 + 代码
+├── .dockerignore            构建上下文排除项
+├── requirements.txt         API 运行依赖
 ├── AEP_hourly.csv           原始数据（不入库，自行下载）
 ├── processed/               清洗产物 + SQLite 库（不入库，可由脚本重建）
 ├── sql/
@@ -170,7 +174,25 @@ uvicorn main:app --reload
 
 ---
 
-## 8. 运行
+## 8. Docker 运行
+
+```bash
+# 构建（首次会装依赖，约 1 分钟）
+docker build -t power-load-api .
+
+# 运行（宿主机 8000 → 容器 8000）
+docker run --rm -p 8000:8000 power-load-api
+```
+
+打开 `http://127.0.0.1:8000/docs` 验证。
+
+- 镜像基于 `python:3.12-slim`，包含代码、SQLite 库和模型（约 1.2 GB）
+- `.dockerignore` 排除了原始 CSV、`.git`、`__pycache__` 和文档
+- pip 使用清华源，构建不依赖代理
+
+---
+
+## 9. 运行
 
 ```bash
 pip install pandas numpy pyarrow fastapi uvicorn scikit-learn joblib
@@ -190,7 +212,7 @@ uvicorn main:app --reload
 
 ---
 
-## 9. 已知局限
+## 10. 已知局限
 
 1. 2014–2017 年 4 个夏令时秋季日：源数据有两个 02:00 时间戳，去重保留了第一条，丢了 1 个真实小时。
 2. 3 个普通缺失未补，占比 0.02%。
@@ -201,11 +223,11 @@ uvicorn main:app --reload
 
 ---
 
-## 10. 下一步
+## 11. 下一步
 
-1. **Docker**：把 API 打包成镜像（S7）
-2. **测试与 CI**：pytest 覆盖 `/health`、`/predict`，GitHub Actions 跑测试
-3. **模型继续优化**：LightGBM、更多滚动特征、多步预测
+1. **CI**：GitHub Actions 跑语法/格式检查；仓库不含数据与模型，接口测试在本地跑
+2. **模型继续优化**：LightGBM、更多滚动特征、多步预测
+3. **部署**：镜像推到阿里云容器镜像服务，或部署到云主机
 
 ---
 
